@@ -54,7 +54,7 @@ pip-wheel-metadata
 
 
 test_capi
-*.o
+*143# .o
 *.a
 test_capi
 /.mypyc-flake8-cache.json
