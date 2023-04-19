@@ -1954,11 +1954,15 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 # If we have an overload, filter to overloads that match the self type.
                 # This avoids false positives for concrete subclasses of generic classes,
                 # see testSelfTypeOverrideCompatibility for an example.
-                filtered_items = [
-                    item
-                    for item in mapped_typ.items
-                    if not item.arg_types or is_subtype(active_self_type, item.arg_types[0])
-                ]
+                filtered_items = []
+                for item in mapped_typ.items:
+                    if not item.arg_types:
+                        filtered_items.append(item)
+                    item_arg = item.arg_types[0]
+                    if isinstance(item_arg, TypeVarType):
+                        item_arg = item_arg.upper_bound
+                    if is_subtype(active_self_type, item_arg):
+                        filtered_items.append(item)
                 # If we don't have any filtered_items, maybe it's always a valid override
                 # of the superclass? However if you get to that point you're in murky type
                 # territory anyway, so we just preserve the type and have the behaviour match
@@ -2068,7 +2072,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     if not is_subtype(
                         original.arg_types[i], erase_override(override.arg_types[i])
                     ):
-
                         arg_type_in_super = original.arg_types[i]
 
                         if isinstance(node, FuncDef):
@@ -2485,7 +2488,14 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
         first_type = get_proper_type(self.determine_type_of_member(first))
         second_type = get_proper_type(self.determine_type_of_member(second))
 
-        if isinstance(first_type, FunctionLike) and isinstance(second_type, FunctionLike):
+        # start with the special case that Instance can be a subtype of FunctionLike
+        call = None
+        if isinstance(first_type, Instance):
+            call = find_member("__call__", first_type, first_type, is_operator=True)
+        if call and isinstance(second_type, FunctionLike):
+            second_sig = self.bind_and_map_method(second, second_type, ctx, base2)
+            ok = is_subtype(call, second_sig, ignore_pos_arg_names=True)
+        elif isinstance(first_type, FunctionLike) and isinstance(second_type, FunctionLike):
             if first_type.is_type_obj() and second_type.is_type_obj():
                 # For class objects only check the subtype relationship of the classes,
                 # since we allow incompatible overrides of '__init__'/'__new__'
@@ -2947,7 +2957,6 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             and lvalue.kind in (MDEF, None)
             and len(lvalue_node.info.bases) > 0  # None for Vars defined via self
         ):
-
             for base in lvalue_node.info.mro[1:]:
                 tnode = base.names.get(lvalue_node.name)
                 if tnode is not None:
@@ -5071,7 +5080,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             callables, uncallables = self.partition_by_callable(
                 erase_to_union_or_bound(typ), unsound_partition
             )
-            uncallables = [typ] if len(uncallables) else []
+            uncallables = [typ] if uncallables else []
             return callables, uncallables
 
         # A TupleType is callable if its fallback is, but needs special handling
@@ -5086,7 +5095,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 callables, uncallables = self.partition_by_callable(
                     method.type, unsound_partition=False
                 )
-                if len(callables) and not len(uncallables):
+                if callables and not uncallables:
                     # Only consider the type callable if its __call__ method is
                     # definitely callable.
                     return [typ], []
@@ -5122,14 +5131,12 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
         callables, uncallables = self.partition_by_callable(current_type, unsound_partition=False)
 
-        if len(callables) and len(uncallables):
-            callable_map = {expr: UnionType.make_union(callables)} if len(callables) else None
-            uncallable_map = (
-                {expr: UnionType.make_union(uncallables)} if len(uncallables) else None
-            )
+        if callables and uncallables:
+            callable_map = {expr: UnionType.make_union(callables)} if callables else None
+            uncallable_map = {expr: UnionType.make_union(uncallables)} if uncallables else None
             return callable_map, uncallable_map
 
-        elif len(callables):
+        elif callables:
             return {}, None
 
         return None, {}
@@ -6504,7 +6511,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 if intersection is None:
                     continue
                 out.append(intersection)
-        if len(out) == 0:
+        if not out:
             # Only report errors if no element in the union worked.
             if self.should_report_unreachable_issues():
                 for types, reason in errors:
@@ -7344,7 +7351,7 @@ class DisjointDict(Generic[TKey, TValue]):
 
         Note that the given set of keys must be non-empty -- otherwise, nothing happens.
         """
-        if len(keys) == 0:
+        if not keys:
             return
 
         subtree_roots = [self._lookup_or_make_root_id(key) for key in keys]
@@ -7455,7 +7462,7 @@ def group_comparison_operands(
         if current_indices and (operator != last_operator or operator not in operators_to_group):
             # If some of the operands in the chain are assignable, defer adding it: we might
             # end up needing to merge it with other chains that appear later.
-            if len(current_hashes) == 0:
+            if not current_hashes:
                 simplified_operator_list.append((last_operator, sorted(current_indices)))
             else:
                 groups[last_operator].add_mapping(current_hashes, current_indices)
@@ -7478,7 +7485,7 @@ def group_comparison_operands(
                 current_hashes.add(right_hash)
 
     if last_operator is not None:
-        if len(current_hashes) == 0:
+        if not current_hashes:
             simplified_operator_list.append((last_operator, sorted(current_indices)))
         else:
             groups[last_operator].add_mapping(current_hashes, current_indices)

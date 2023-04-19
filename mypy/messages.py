@@ -19,6 +19,7 @@ from textwrap import dedent
 from typing import Any, Callable, Collection, Iterable, Iterator, List, Sequence, cast
 from typing_extensions import Final
 
+import mypy.typeops
 from mypy import errorcodes as codes, message_registry
 from mypy.erasetype import erase_type
 from mypy.errorcodes import ErrorCode
@@ -2275,7 +2276,6 @@ def format_callable_args(
     arg_strings = []
     for arg_name, arg_type, arg_kind in zip(arg_names, arg_types, arg_kinds):
         if arg_kind == ARG_POS and arg_name is None or verbosity == 0 and arg_kind.is_positional():
-
             arg_strings.append(format(arg_type))
         else:
             constructor = ARG_CONSTRUCTOR_NAMES[arg_kind]
@@ -2382,7 +2382,7 @@ def format_type_inner(
         if not typ.is_anonymous():
             return format(typ.fallback)
         items = []
-        for (item_name, item_type) in typ.items.items():
+        for item_name, item_type in typ.items.items():
             modifier = "" if item_name in typ.required_keys else "?"
             items.append(f"{item_name!r}{modifier}: {format(item_type)}")
         s = f"TypedDict({{{', '.join(items)}}})"
@@ -2711,7 +2711,7 @@ def get_conflict_protocol_types(
             continue
         supertype = find_member(member, right, left)
         assert supertype is not None
-        subtype = find_member(member, left, left, class_obj=class_obj)
+        subtype = mypy.typeops.get_protocol_member(left, member, class_obj)
         if not subtype:
             continue
         is_compat = is_subtype(subtype, supertype, ignore_pos_arg_names=True)
@@ -2781,7 +2781,7 @@ def strip_quotes(s: str) -> str:
 
 
 def format_string_list(lst: list[str]) -> str:
-    assert len(lst) > 0
+    assert lst
     if len(lst) == 1:
         return lst[0]
     elif len(lst) <= 5:
