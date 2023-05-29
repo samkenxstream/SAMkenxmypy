@@ -25,6 +25,7 @@ from typing_extensions import Final, TypeAlias as _TypeAlias, TypeGuard
 from mypy_extensions import trait
 
 import mypy.strconv
+from mypy.options import Options
 from mypy.util import short_type
 from mypy.visitor import ExpressionVisitor, NodeVisitor, StatementVisitor
 
@@ -173,7 +174,7 @@ del _nongen_builtins["builtins.str"]
 
 
 def get_nongen_builtins(python_version: tuple[int, int]) -> dict[str, str]:
-    # After 3.9 with pep585 generic builtins are allowed.
+    # After 3.9 with pep585 generic builtins are allowed
     return _nongen_builtins if python_version < (3, 9) else {}
 
 
@@ -190,9 +191,14 @@ class Node(Context):
     __slots__ = ()
 
     def __str__(self) -> str:
-        ans = self.accept(mypy.strconv.StrConv())
+        ans = self.accept(mypy.strconv.StrConv(options=Options()))
         if ans is None:
             return repr(self)
+        return ans
+
+    def str_with_options(self, options: Options) -> str:
+        ans = self.accept(mypy.strconv.StrConv(options=options))
+        assert ans
         return ans
 
     def accept(self, visitor: NodeVisitor[T]) -> T:
@@ -281,6 +287,7 @@ class MypyFile(SymbolNode):
         "names",
         "imports",
         "ignored_lines",
+        "unreachable_lines",
         "is_stub",
         "is_cache_skeleton",
         "is_partial_stub_package",
@@ -307,6 +314,8 @@ class MypyFile(SymbolNode):
     # If the value is empty, ignore all errors; otherwise, the list contains all
     # error codes to ignore.
     ignored_lines: dict[int, list[str]]
+    # Lines that are statically unreachable (e.g. due to platform/version check).
+    unreachable_lines: set[int]
     # Is this file represented by a stub file (.pyi)?
     is_stub: bool
     # Is this loaded from the cache and thus missing the actual body of the file?
@@ -339,6 +348,7 @@ class MypyFile(SymbolNode):
             self.ignored_lines = ignored_lines
         else:
             self.ignored_lines = {}
+        self.unreachable_lines = set()
 
         self.path = ""
         self.is_stub = False
@@ -502,6 +512,7 @@ class FuncBase(Node):
         "is_class",  # Uses "@classmethod" (explicit or implicit)
         "is_static",  # Uses "@staticmethod"
         "is_final",  # Uses "@final"
+        "is_explicit_override",  # Uses "@override"
         "_fullname",
     )
 
@@ -519,6 +530,7 @@ class FuncBase(Node):
         self.is_class = False
         self.is_static = False
         self.is_final = False
+        self.is_explicit_override = False
         # Name with module prefix
         self._fullname = ""
 
@@ -3183,22 +3195,21 @@ class TypeInfo(SymbolNode):
 
         This includes the most important information about the type.
         """
-        return self.dump()
+        options = Options()
+        return self.dump(
+            str_conv=mypy.strconv.StrConv(options=options),
+            type_str_conv=mypy.types.TypeStrVisitor(options=options),
+        )
 
     def dump(
-        self,
-        str_conv: mypy.strconv.StrConv | None = None,
-        type_str_conv: mypy.types.TypeStrVisitor | None = None,
+        self, str_conv: mypy.strconv.StrConv, type_str_conv: mypy.types.TypeStrVisitor
     ) -> str:
         """Return a string dump of the contents of the TypeInfo."""
-        if not str_conv:
-            str_conv = mypy.strconv.StrConv()
+
         base: str = ""
 
         def type_str(typ: mypy.types.Type) -> str:
-            if type_str_conv:
-                return typ.accept(type_str_conv)
-            return str(typ)
+            return typ.accept(type_str_conv)
 
         head = "TypeInfo" + str_conv.format_id(self)
         if self.bases:
@@ -3460,6 +3471,7 @@ class TypeAlias(SymbolNode):
         "normalized",
         "_is_recursive",
         "eager",
+        "tvar_tuple_index",
     )
 
     __match_args__ = ("name", "target", "alias_tvars", "no_args")
@@ -3487,6 +3499,10 @@ class TypeAlias(SymbolNode):
         # it is the cached value.
         self._is_recursive: bool | None = None
         self.eager = eager
+        self.tvar_tuple_index = None
+        for i, t in enumerate(alias_tvars):
+            if isinstance(t, mypy.types.TypeVarTupleType):
+                self.tvar_tuple_index = i
         super().__init__(line, column)
 
     @classmethod
